@@ -1,4 +1,4 @@
-# PyNest Repository
+# allyouneedisPython Repository
 
 Welcome, this is your cozy retreat in the Python ecosystem! Our repository houses a curated collection of simple yet powerful Python scripts and code snippets.
 
