@@ -1,176 +1,114 @@
-from bs4 import BeautifulSoup
-from bs4 import BeautifulSoup as BS
-from email import utils
-from html.entities import codepoint2name
-from numpy import genfromtxt
-from numpy import loadtxt
-from pathlib import Path
-from pickle import FALSE, TRUE
-from socket import TCP_NODELAY
-from tinydb import TinyDB, Query
-from types import AsyncGeneratorType
-from urllib.parse import urlparse
-from urllib.parse import urlparse 
-import advertools as adv
-import csv
-import datetime
-import datetime 
-import email
-import feedparser
-import hashlib
-import html
-import numpy
 import os
-import os, random
-import re
-import requests 
-import time 
-import urllib.request
-import validators
+import hashlib
+import time
+import requests
+import certifi
+import feedparser
+from tinydb import TinyDB, Query
+from datetime import datetime
+from typing import Optional
+from datetime import datetime, timezone
 
-#################################
-##  main rifatto da zero       ##
-##  specifico per MIEI SITI    ##
-##  25 maggio 2024             ##
-###############################@#
+# Percorso DB relativo alla posizione dello script
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, 'log_gia_pubblicati.json')
 
-def generate_sha1_hash(input_string):
-    # Crea un oggetto hash SHA-1
-    sha1_hash = hashlib.sha1()
-    # Codifica la stringa di input come bytes e aggiorna l'oggetto hash
-    sha1_hash.update(input_string.encode('utf-8'))
-    # Restituisce l'hash come stringa esadecimale
-    return sha1_hash.hexdigest()
+# Configurazione blog e telegram
+BLOGS = {
+    "https://nomesito.com": { # testato con siti wordpress, funzionamentonon garantito su altri CMS
+        "token": "il_tuo_token", # il bot associato alla chiave deve essere amministratore del canale
+        "chatid": "@nome_del_canale"
+    }
+}
 
-# def gia_pubblicato(db, riga):
-#     print ("gia_pubblicato?")
+def sha1_hash(text: str) -> str:
+    """Genera hash SHA1 da stringa"""
+    return hashlib.sha1(text.encode('utf-8')).hexdigest()
 
-#     Tupla = Query()
-#     hash      = generate_sha1_hash(riga.link)
-#     if not Tupla.title.exists():
-#         return False
+def estrai_data(entry) -> float:
+    """Estrai timestamp da entry feed, usato per ordinare"""
+    if 'published_parsed' in entry and entry.published_parsed:
+        return time.mktime(entry.published_parsed)
+    if 'updated_parsed' in entry and entry.updated_parsed:
+        return time.mktime(entry.updated_parsed)
+    return 0  # se non disponibile, consideralo vecchio
 
-#     return db.search( Tupla.hash == hash )
-
-def gia_pubblicato(db, riga):
-    print("gia_pubblicato?")
+def gia_pubblicato(db: TinyDB, hash_: str) -> bool:
+    """Controlla se hash esiste nel DB"""
     Tupla = Query()
-    hash_value = generate_sha1_hash(riga.link)
-    
-    # Cerca nel database se l'hash esiste già
-    result = db.search(Tupla.hash == hash_value)
-    if result:
-        print("Articolo già pubblicato!")
-        return True
-    else:
-        print("Articolo nuovo!")
+    return db.contains(Tupla.hash == hash_)
+
+def salva_pubblicazione(db: TinyDB, entry, hash_: str):
+    """Salva notizia pubblicata nel DB"""
+    db.insert({
+        "title": entry.title,
+        "link": entry.link,
+        "when": datetime.now(timezone.utc).isoformat(),  # <-- cambio qui
+        "hash": hash_
+    })
+
+def pubblica_telegram(token: str, chat_id: str, testo: str) -> bool:
+    """Invia messaggio Telegram, ritorna True se ok"""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": testo,
+        "parse_mode": "HTML"
+    }
+    try: 
+        response = requests.post(url, data=payload, timeout=10)
+        return response.status_code == 200
+    except requests.RequestException as e:
+        print(f"[ERRORE] Invio Telegram fallito: {e}")
         return False
 
-def salva_riga(db, riga):
-    print("salva_riga")
-    Tupla = Query()
-    when = str(datetime.datetime.now())
-    hash_value = generate_sha1_hash(riga.link)
+def main():
+    db = TinyDB(DB_FILE)
 
-    # Salva solo se NON esiste
-    result = db.search(Tupla.hash == hash_value)
-    if not result:
-        print("inserisco ------")
-        print(riga.title)
-        print(riga.link)
-        print(when)
-        print(hash_value)
-        print("----------------")
-        db.insert({
-            'title': riga.title,
-            'link': riga.link,
-            'when': when,
-            'hash': hash_value
-        })
-    else:
-        print("Già salvato, salto.")
+    for blog_url, creds in BLOGS.items():
+        feed_url = blog_url.rstrip('/') + '/feed'
+        try:
+            response = requests.get(feed_url, verify=certifi.where(), timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[ERRORE] Fallito download feed: {e}")
+            continue
 
-miei_blog = [
-    # "https://sito1,
-    # "https://sito2",
-    # "https://sito3"
-    # ... 
-]
+        feed = feedparser.parse(response.content)
 
-SEP             = " "
-DELIMITER       = ";"
-ACAPO           = "\n"
+        if feed.bozo:
+            print(f"[ERRORE] Parsing feed fallito: {feed.bozo_exception}")
+            continue
 
-db = TinyDB('/path/to/log_pubblicati.json', sort_keys=True, indent=4) 
-print ("usando db: ",str(db) )
-for URL in miei_blog: 
-    feed = URL + '/feed'
-    rss_data = feedparser.parse( feed )
+        entries = sorted(feed.entries, key=estrai_data)
 
-    count=0
-    for riga in rss_data.entries:
-        print (riga.title)
-        print (riga.link)
-        print ("----------")
-        if not gia_pubblicato(db, riga):
-            time.sleep( random.randint(5,15) )  
-            
-            # pubblica su telegram
-            params = {  
-                'https://sito1'  :           
-                {
-                    'token': 'mytoken_sito1',
-                    'chatid': '@mychat_sito1'
-                },
-                # ...
-            } 
+        notizia_da_pubblicare: Optional[dict] = None
+        for entry in entries:
+            hash_ = sha1_hash(entry.link)
+            if not gia_pubblicato(db, hash_):
+                notizia_da_pubblicare = {
+                    "entry": entry,
+                    "hash": hash_
+                }
+                break
 
-            token   = str( params[URL]['token'] )
-            chat_id = str( params[URL]['chatid'] )
+        if notizia_da_pubblicare is None:
+            print("Nessuna nuova notizia da pubblicare.")
+            return
 
-            # aggiunta del nome del canale al testo 
-            text    = str( riga.title + " \n\n " + params[URL]['chatid'] + " \n " + riga.link )
-            text    = text.replace('&', " and ")
+        entry = notizia_da_pubblicare["entry"]
+        hash_ = notizia_da_pubblicare["hash"]
 
-            # text    = str( html.escape( text ) ) # .encode('utf-8') )
-            # print (text )
-            # exit()
-            # print ("sending request for ",riga.link," ... token = ", token)
-            url = "https://api.telegram.org/bot"+token+"/sendMessage?chat_id="+chat_id+"&&text=" + text
+        testo = f"{entry.title}\n{entry.link}"
+        testo = testo.replace('&', 'and')
 
-            # Invia la richiesta
-            response = requests.post(url, data={'parse_mode': 'HTML'})
-            print ("done!")
+        print(f"Pubblicazione notizia: {entry.title}")
 
-            salva_riga(db, riga)
+        if pubblica_telegram(creds["token"], creds["chatid"], testo):
+            salva_pubblicazione(db, entry, hash_)
+            print("Notizia pubblicata con successo.")
         else:
-            print("No, GIA pubblicato!")
+            print("Errore nella pubblicazione su Telegram.")
 
-        count = count+1
-
-# Questo script è una **sinfonia di automazione**, progettata con cura per gestire in modo intelligente la pubblicazione di articoli dai tuoi siti personali sui canali Telegram, evitando duplicazioni e mantenendo uno storico elegante e pulito.
-
-# Alla base di tutto c’è un'architettura snella ma potentissima:
-
-# - **Importazioni vaste e strategiche**: il codice richiama il meglio delle librerie Python — da `BeautifulSoup` a `TinyDB`, passando per `feedparser`, `requests`, `hashlib`, `validators` — per fornire solidità, versatilità e controllo totale su ogni fase del processo.
-  
-# - **Sistema di gestione della pubblicazione**:  
-#   Attraverso la funzione `generate_sha1_hash`, ogni link viene trasformato in una firma digitale unica (hash SHA-1), usata come **impronta digitale** per riconoscere gli articoli già pubblicati, evitando doppioni.
-
-# - **Database leggero ma potente**:  
-#   Con `TinyDB`, i dati degli articoli pubblicati (titolo, link, data, hash) vengono archiviati in un file JSON, ordinato e facilmente consultabile. Un sistema affidabile che unisce **semplicità** e **efficienza**.
-
-# - **Logica chiara ed elegante**:  
-#   Funzioni come `gia_pubblicato` e `salva_riga` orchestrano il controllo e la registrazione dei post, rendendo il flusso di lavoro **intuitivo**, **robusto** e **modulare**.
-
-# - **Pianificazione naturale delle pubblicazioni**:  
-#   Con una pausa casuale (`sleep` di 5-15 secondi) tra un post e l'altro, lo script simula un comportamento umano, proteggendo i tuoi bot da eventuali restrizioni automatiche.
-
-# - **Pubblicazione su Telegram completamente automatizzata**:  
-#   Ad ogni articolo nuovo, il sistema costruisce dinamicamente il messaggio, arricchendolo con il nome del canale e gestendo con intelligenza eventuali caratteri problematici (come la sostituzione di `&`).
-
-# - **Flessibilità totale sui siti**:  
-#   I blog da monitorare sono facilmente definibili nella lista `miei_blog`, permettendoti di estendere o modificare il tuo network senza alterare il cuore dello script.
-
-# - **Commenti accurati**:  
-#   Non solo il codice funziona perfettamente, ma è **generosamente commentato** per ricordarti il pensiero dietro ogni scelta, il tutto segnato da una data precisa: **25 maggio 2024**, una firma personale dell’autore.
+if __name__ == "__main__":
+    main()
